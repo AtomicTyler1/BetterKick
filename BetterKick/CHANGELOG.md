@@ -1,3 +1,7 @@
+# v0.1.3 - Fix
+
+- Hopefully fixed not being able to kick in multiplayer even though everyone had the mod. (ON THE LATEST VERSION)
+
 # v0.1.1 - Update
 
 - **EVERYONE** must have the mod installed to kick.

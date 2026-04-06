@@ -3,11 +3,13 @@ using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
 using Photon.Pun;
+using Photon.Realtime;
 using System.Collections;
 using TMPro;
 using UnityEngine;
-using UnityEngine.TextCore.Text;
 using UnityEngine.UI;
+using PhotonHashtable = ExitGames.Client.Photon.Hashtable;
+using PhotonPlayer = Photon.Realtime.Player;
 
 namespace BetterKick
 {
@@ -15,31 +17,56 @@ namespace BetterKick
     public partial class Plugin : BaseUnityPlugin
     {
         internal static ManualLogSource Log { get; private set; } = null!;
-        public static Harmony harmony = null!;
-
         public static ConfigEntry<KeyCode> kickKeybind;
+        public const string MOD_KEY = "BetterKick_Installed";
 
         private void Awake()
         {
             Log = Logger;
-            harmony = new Harmony(Id);
+            Harmony harmony = new Harmony(Id);
             harmony.PatchAll();
             Log.LogInfo($"Plugin {Name} is loaded!");
 
             kickKeybind = Config.Bind("General", "Kick Keybind", KeyCode.V, "The keybind for kicking.");
         }
 
-        public static void ShowWarning(string message, bool ignoreUserConfig = false)
+        public static void SetModStatus()
+        {
+            if (PhotonNetwork.InRoom && PhotonNetwork.LocalPlayer != null)
+            {
+                PhotonHashtable props = new PhotonHashtable { { MOD_KEY, true } };
+                PhotonNetwork.LocalPlayer.SetCustomProperties(props);
+                Log.LogInfo("Sent BetterKick status to the room.");
+            }
+        }
+
+        public static bool AllPlayersHaveMod()
+        {
+            if (!PhotonNetwork.InRoom) return true;
+
+            foreach (PhotonPlayer p in PhotonNetwork.PlayerList)
+            {
+                if (p.IsLocal) continue;
+
+                // If the property doesn't exist on a remote player, they don't have the mod
+                if (p.CustomProperties == null || !p.CustomProperties.ContainsKey(MOD_KEY))
+                {
+                    Log.LogWarning($"Player {p.NickName} is missing the mod.");
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        public static void ShowWarning(string message)
         {
             var guiManager = GameObject.FindFirstObjectByType<GUIManager>();
             if (guiManager == null) return;
 
-            var font = guiManager.heroDayText.font;
-
             GameObject canvasObj = new GameObject("BetterKick_Canvas");
             Canvas canvas = canvasObj.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            canvas.sortingOrder = 101;
+            canvas.sortingOrder = 999;
 
             CanvasScaler scaler = canvasObj.AddComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
@@ -47,60 +74,35 @@ namespace BetterKick
 
             GameObject container = new GameObject("BetterKickContainer");
             container.transform.SetParent(canvasObj.transform, false);
-
             CanvasGroup group = container.AddComponent<CanvasGroup>();
-            group.alpha = 0f;
 
             RectTransform rect = container.AddComponent<RectTransform>();
-            rect.anchorMin = new Vector2(0, 0);
-            rect.anchorMax = new Vector2(1, 0);
-            rect.pivot = new Vector2(0, 0);
-            rect.anchoredPosition = new Vector2(20, 20);
-            rect.sizeDelta = new Vector2(-40, 60);
+            rect.anchorMin = new Vector2(0.5f, 0f);
+            rect.anchorMax = new Vector2(0.5f, 0f);
+            rect.pivot = new Vector2(0.5f, 0f);
+            rect.anchoredPosition = new Vector2(0, 70);
+            rect.sizeDelta = new Vector2(800, 100);
 
             GameObject textObj = new GameObject("WarningText");
             textObj.transform.SetParent(container.transform, false);
-
-            RectTransform textRect = textObj.AddComponent<RectTransform>();
-            textRect.anchorMin = Vector2.zero;
-            textRect.anchorMax = Vector2.one;
-            textRect.sizeDelta = Vector2.zero;
-
             TextMeshProUGUI tmp = textObj.AddComponent<TextMeshProUGUI>();
+
             tmp.text = message.ToUpper();
-            tmp.font = font;
-            tmp.fontSize = 28;
-            tmp.alignment = TextAlignmentOptions.BottomLeft;
-            tmp.textWrappingMode = TextWrappingModes.NoWrap;
-            tmp.overflowMode = TextOverflowModes.Ellipsis;
+            tmp.font = guiManager.heroDayText.font;
+            tmp.fontSize = 32;
+            tmp.alignment = TextAlignmentOptions.Center;
+            tmp.color = new Color(1f, 0.3f, 0.3f);
 
-            tmp.color = new Color(1f, 0.2f, 0.2f);
-            tmp.outlineColor = new Color(0.1f, 0f, 0f);
-            tmp.outlineWidth = 0.08f;
-
-            guiManager.StartCoroutine(FadeAlertUI(group, canvasObj, message));
+            guiManager.StartCoroutine(FadeAlertUI(group, canvasObj));
         }
 
-        private static IEnumerator FadeAlertUI(CanvasGroup group, GameObject fullCanvas, string message)
+        private static IEnumerator FadeAlertUI(CanvasGroup group, GameObject fullCanvas)
         {
             float elapsed = 0f;
-            while (elapsed < 0.5f)
-            {
-                elapsed += Time.deltaTime;
-                group.alpha = elapsed / 0.5f;
-                yield return null;
-            }
-
-            yield return new WaitForSeconds(4f);
-
+            while (elapsed < 0.3f) { elapsed += Time.deltaTime; group.alpha = elapsed / 0.3f; yield return null; }
+            yield return new WaitForSeconds(2.5f);
             elapsed = 0f;
-            while (elapsed < 1f)
-            {
-                elapsed += Time.deltaTime;
-                group.alpha = 1f - (elapsed / 1f);
-                yield return null;
-            }
-
+            while (elapsed < 0.3f) { elapsed += Time.deltaTime; group.alpha = 1f - (elapsed / 0.3f); yield return null; }
             Destroy(fullCanvas);
         }
     }
@@ -108,21 +110,19 @@ namespace BetterKick
     [HarmonyPatch]
     public static class BetterKickPatches
     {
-        private static bool AllClientsHaveMod =>
-            Netcode.Instance.PlayersWithMod.Count >= PhotonNetwork.CurrentRoom.PlayerCount;
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(MonoBehaviourPunCallbacks), nameof(MonoBehaviourPunCallbacks.OnJoinedRoom))]
+        public static void OnJoinedRoom()
+        {
+            Plugin.SetModStatus();
+        }
 
         [HarmonyPostfix]
-        [HarmonyPatch(typeof(RunManager), nameof(RunManager.StartRun))]
-        public static void OnRunStart()
+        [HarmonyPatch(typeof(MonoBehaviourPunCallbacks), nameof(MonoBehaviourPunCallbacks.OnPlayerEnteredRoom))]
+        public static void OnPlayerEnteredRoom(PhotonPlayer newPlayer)
         {
-            Netcode.Instance.PlayersWithMod.Clear();
-
-            Netcode.Instance.PlayersWithMod.Add(PhotonNetwork.LocalPlayer.ActorNumber);
-
-            if (PhotonNetwork.InRoom)
-            {
-                Netcode.Instance.photonView.RPC("RPC_RegisterModPresence", RpcTarget.Others, PhotonNetwork.LocalPlayer.ActorNumber);
-            }
+            Plugin.SetModStatus();
+            Plugin.Log.LogInfo($"{newPlayer.NickName} joined. Re-syncing mod status.");
         }
 
         [HarmonyPostfix]
@@ -133,26 +133,22 @@ namespace BetterKick
 
             if (Input.GetKeyDown(Plugin.kickKeybind.Value) && !__instance.character.data.isKicking)
             {
-                if (AllClientsHaveMod || PhotonNetwork.CurrentRoom.PlayerCount <= 1)
+                if (Plugin.AllPlayersHaveMod())
                 {
                     if (__instance.character.photonView.IsMine)
                     {
                         var character = __instance.character;
                         if (!character.data.isClimbingAnything && character.data.isGrounded && !character.OutOfRegularStamina())
                         {
-                            Plugin.Log.LogInfo($"Kicking!");
-
                             character.data.isKicking = true;
                             __instance._kickTime = 0f;
-
                             character.photonView.RPC("RPCA_Kick", RpcTarget.All);
                         }
                     }
                 }
                 else
                 {
-                    Plugin.ShowWarning("Cannot kick: Not all players have the BetterKick mod installed.");
-                    Plugin.Log.LogWarning("Cannot kick: Not all players have the BetterKick mod installed.");
+                    Plugin.ShowWarning("Cannot kick: Someone is missing the BetterKick mod.");
                 }
             }
 
